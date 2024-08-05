@@ -39,24 +39,13 @@
                  (setq cur (+ cur 1))))
         finally (return i)))
 
-(defun logt (v)
-  (progn
-    (charms:write-string-at-point T (write-to-string v) 10 12)
-    v))
-
-(defun index/normal_ (s i)
+(defun index/normal (s i)
   (cond
     ((> i (length s)) i)
     ((< i 0) 0)
     (t (length (render-row (subseq s 0 i))))))
 
-(defun index/normal (s i)
-  (let ((o (index/normal_ s i)))
-    (progn
-     ;   (write (write-to-string (list "in" i o)))
-        o)))
-
-(defun cursor/index_ (s i)
+(defun cursor/index (s i)
   (loop for c across s
         with cur = 0
         for j from 0
@@ -68,21 +57,14 @@
         finally (return (progn
                           (if (>= i cur)
                               (1+ j)
-                              j
-                              )
-                           )
-                ; return j
-                 )))
-
-(defun cursor/index (s i)
-  (let ((o (cursor/index_ s i)))
-    (progn
-        ;(write (write-to-string (list i o)))
-        o)))
+                              j)))))
 
 (defparameter *ss*
   (loop for s in *raw-rows*
        collect (render-row s)))
+
+(defparameter *status* "")
+(defparameter *input-state* 'normal)
 
 (defvar *right*
   (code-char 261))
@@ -98,6 +80,10 @@
   (code-char 10))
 (defvar *del*
   (code-char 330))
+(defvar *escape*
+  (code-char 27))
+(defvar *ctrl-f*
+  (code-char 6))
 (defvar *ctrl-h*
   (code-char 8))
 (defvar *ctrl-l*
@@ -105,7 +91,7 @@
 
 (defun write-at (window s x y)
   (multiple-value-bind (width height) (charms:window-dimensions window)
-    (when (and (< y (- height 1)) (>= y 0))
+    (when (and (< y (- height 3)) (>= y 0))
       (charms/ll:mvaddnstr y x s width)
  ;     (charms:write-string-at-point window s x y)
       )))
@@ -134,11 +120,23 @@
   (length (nth i text)))
 
 (defparameter *height* 20)
+(defparameter *last-pos-x* 0)
+(defparameter *last-pos-y* 0)
+
+(defun draw-status (window)
+  (multiple-value-bind (width height) (charms:window-dimensions window)
+    (charms/ll:mvaddnstr (- height 2) 0 *status* width)))
+  
+;  (multiple-value-bind (width height) (charms:window-dimensions window)
+;    (write-at T *status* 0 (-1 height))))
 
 (defun draw (h)
-   (loop for s in *ss*
-         for x from (- h)
-         do (write-at T s 0 x)))
+  (progn
+    (loop for s in *ss*
+          for y from (- h)
+          do (write-at T s 0 y))
+    (draw-status T)
+    ))
 
 
 (defun set-nth (list n value)
@@ -159,7 +157,8 @@
     (concatenate 'list 
                  (subseq s 0 i)
                  (subseq s (+ 1 i))))
-+(defmacro removef-lst-i (s i)
+
+(defmacro removef-lst-i (s i)
   `(setf ,s (remove-lst-i ,s ,i)))
 
 (defun insert-lst (s w i)
@@ -168,8 +167,65 @@
                  (list w)
                  (subseq s i)))
 
-; TODO: Fix deleting empty lines
-(defmacro parse-input (c x y)
+(defun search-idx (dir y)
+  (case dir
+    (1 (loop ;for s in *ss*
+         for i from y to (length *ss*)
+         for s = (nth i *ss*)
+         for sub-i = (search *status* s)
+         if sub-i return (values i sub-i)
+         finally (return NIL)))
+    (-1 (loop 
+          for i from y downto 0
+          for s = (nth i *ss*)
+          for sub-i = (search *status* s)
+          if sub-i return (values i sub-i)
+          finally (return NIL)))))
+
+(defmacro parse-input-field (c x y)
+  `(cond
+     ((eq ,c NIL)
+      ())
+     ((eq ,c *enter*)
+      (setf *input-state* 'normal))
+     ((eq ,c *escape*)
+      (progn
+        (setf ,y *last-pos-y*)
+        (setf ,x *last-pos-x*)
+        (setf *input-state* 'normal)))
+     ((or (eq ,c *left*) (eq ,c *up*))
+      (multiple-value-bind (yy xx) (search-idx -1 (1- ,y))
+        (when yy
+          (progn
+            (setf ,y yy)
+            (setf ,x xx)))))
+     ((or (eq ,c *right*) (eq ,c *down*))
+      (multiple-value-bind (yy xx) (search-idx 1 (1+ ,y))
+        (when yy
+          (progn
+            ;(write (write-to-string (list "nie" ,y yy)))
+            (setf ,y yy)
+            (setf ,x xx)))))
+     ((eq ,c *backspace*)
+      (setf *status* (str:substring 0 -1 *status*)))
+     (T
+      (progn
+        (setf *status* (str:insert ,c (length *status*) *status*))
+        
+        (multiple-value-bind (yy xx) (search-idx 1 0)
+          (when yy
+            (progn
+              (setf ,y yy)
+              (setf ,x xx)))
+          ;(write yy)
+          ;(write (write-to-string xx))
+         ; (setf ,x xx)
+         )
+        
+        ))
+     ))
+
+(defmacro parse-input-normal (c x y)
   `(cond 
     ((eq ,c *up*)    (dec ,y))
     ((eq ,c *down*)  (inc ,y (- (length *ss*) 1)))
@@ -201,8 +257,7 @@
        (setf *ss* (insert-lst *ss* (render-row (nth (1+ ,y) *raw-rows*)) (1+ ,y)))
        (setf ,y (1+ ,y))
        (setf ,x 0)))
-       ;(change-cursro)
-    ; TODO: ADD deleting lines (at 0 index special case) aslo think what about empty file
+
     ((eq ,c *backspace*) 
      (let* ((raw-row (nth y *raw-rows*))
             (i (cursor/index raw-row ,x)))
@@ -227,32 +282,41 @@
              (setf-nth *ss* ,y (render-row (nth ,y *raw-rows*)))
              (setf x (index/normal (nth ,y *raw-rows*) (1- i)))))))
 
+    ((eq ,c *ctrl-f*) (progn
+                        (setf *last-pos-y* ,y)
+                        (setf *last-pos-x* ,x)
+                        (setf *input-state* 'field)))
     ((eq ,c nil) nil) 
 
     (T               (let* ((raw-row (nth y *raw-rows*))
                            (i (cursor/index raw-row ,x)))
                        (progn
+                       ;  (write (char-int ,c))
                          (when (string= raw-row "")
                            (setf i 0))
-                        (setf-nth *raw-rows* ,y (str:insert ,c i raw-row))
-                        (setf-nth *ss* ,y (render-row (nth ,y *raw-rows*)))
-                        (setf x (index/normal (nth ,y *raw-rows*) (1+ i)))
-                        ))))
-
-
+                         (setf-nth *raw-rows* ,y (str:insert ,c i raw-row))
+                         (setf-nth *ss* ,y (render-row (nth ,y *raw-rows*)))
+                         (setf x (index/normal (nth ,y *raw-rows*) (1+ i)))
+                         ))))
   )
+
+(defmacro parse-input (c x y)
+  `(cond
+    ((eq *input-state* 'normal) (parse-input-normal ,c ,x ,y))
+    ((eq *input-state* 'field)  (parse-input-field ,c ,x ,y))))
 
 (defun hello ()
   (charms:with-curses ()
         (charms:disable-echoing)
         (charms:enable-raw-input)
-     ;  (charms/ll:nocbreak)
-     ;   (charms/ll:timeout 0)
         (charms/ll:cbreak)
         (charms:enable-extra-keys T)
         (charms:clear-window T)
-
-        (setf *height* (nth-value 1 (charms:window-dimensions T)))
+        (charms/ll:timeout 25)
+        (setf charms/ll:*ESCDELAY* 25)
+        
+        (setf *height* (- (nth-value 1 (charms:window-dimensions T)) 3))
+        ;(write (write-to-string *height*))
         
         (loop named hello
               with window = charms:*standard-window*
@@ -262,16 +326,27 @@
               for c = (charms:get-char window :ignore-error t)
               do (progn
                    (charms:clear-window window :force-repaint nil)
+                   ;(when c
+                   ;  (write (write-to-string (char-int c))))
                    
                    (parse-input c x y)
-                   (draw h)
+
 
                    ; SCROLL SCREEN
                    ; TODO: Refactor to outer function to clean up
+                   ; FIX SCROLLING
                    (when (and (< (- y 4) h) (> h 0))
-                     (decf h))
+                     (setf h (max (- y 4) 0)))
+
+                   ;(write (write-to-string y))
+
                    (when (>= (+ y 4) (+ *height* h))
-                     (incf h))
+                     (setf h (+ (- y *height*) 4))
+                     )
+
+                   (draw h)
+                  ; (when (eq *input-state* 'field)
+                  ;   (setf x 2))
 
                    ; MOVE CURSOR
                    ; TODO: Refactor to outer function to clean up
