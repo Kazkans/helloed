@@ -6,6 +6,18 @@
 
 (defparameter *tab-width* 4)
 
+(defparameter *height* 20)
+(defparameter *last-pos-x* 0)
+(defparameter *last-pos-y* 0)
+
+(defstruct highlight
+  y
+  start
+  end)
+
+(defparameter *highlight*
+  NIL)
+
 (defun tab-width-i (i)
           (- *tab-width* (mod i *tab-width*)))
 
@@ -89,10 +101,24 @@
 (defvar *ctrl-l*
   (code-char 12))
 
-(defun write-at (window s x y)
+(defun in-highlight (y x hl)
+  (and
+    hl
+    (= (highlight-y hl) y)
+    (<= (highlight-start hl) x)
+    (> (highlight-end hl) x)))
+
+(defun write-at (window s x y row)
   (multiple-value-bind (width height) (charms:window-dimensions window)
     (when (and (< y (- height 3)) (>= y 0))
-      (charms/ll:mvaddnstr y x s width)
+      (loop for i from 0 below (min width (length s))
+            for c = (char s i)
+            do (progn 
+                 (if (in-highlight row i *highlight*) 
+                     (charms/ll:attron (charms/ll:COLOR-PAIR 2))
+                     (charms/ll:attron (charms/ll:COLOR-PAIR 1)))
+                 (charms:write-char-at-point window c (+ x i) y)))
+      ;(charms/ll:mvaddnstr y x s width)
  ;     (charms:write-string-at-point window s x y)
       )))
 
@@ -119,10 +145,6 @@
 (defun nth-length (i text)
   (length (nth i text)))
 
-(defparameter *height* 20)
-(defparameter *last-pos-x* 0)
-(defparameter *last-pos-y* 0)
-
 (defun draw-status (window)
   (multiple-value-bind (width height) (charms:window-dimensions window)
     (charms/ll:mvaddnstr (- height 2) 0 *status* width)))
@@ -134,9 +156,16 @@
   (progn
     (loop for s in *ss*
           for y from (- h)
-          do (write-at T s 0 y))
-    (draw-status T)
-    ))
+          for i from 0
+        ;(charms/ll:attron (charms/ll:COLOR-PAIR 1))
+          do (progn 
+               (when *highlight*
+                 (if (= i 3)
+                     (charms/ll:attron (charms/ll:COLOR-PAIR 2))
+                     (charms/ll:attron (charms/ll:COLOR-PAIR 1)))
+                 )
+               (write-at T s 0 y i)))
+    (draw-status T)))
 
 
 (defun set-nth (list n value)
@@ -182,48 +211,42 @@
           if sub-i return (values i sub-i)
           finally (return NIL)))))
 
+(defun escape-input-state ()
+  (setf *input-state* 'normal)
+  (setf *highlight* NIL))
+
+(defmacro search-set (x y dir)
+  `(let ((y-start (if (= ,dir 0) 0 ,y))
+         (dir (if (= ,dir 0) 1 ,dir)))
+     (multiple-value-bind (yy xx) (search-idx dir (+ dir y-start))
+       (when yy
+         (progn
+           (setf ,y yy)
+           (setf ,x xx)
+           (setf *highlight* (make-highlight :y yy :start xx :end (+ xx (length *status*)))))))))
+
 (defmacro parse-input-field (c x y)
   `(cond
      ((eq ,c NIL)
       ())
      ((eq ,c *enter*)
-      (setf *input-state* 'normal))
+      (escape-input-state))
      ((eq ,c *escape*)
       (progn
         (setf ,y *last-pos-y*)
         (setf ,x *last-pos-x*)
-        (setf *input-state* 'normal)))
+        (escape-input-state)))
      ((or (eq ,c *left*) (eq ,c *up*))
-      (multiple-value-bind (yy xx) (search-idx -1 (1- ,y))
-        (when yy
-          (progn
-            (setf ,y yy)
-            (setf ,x xx)))))
+      (search-set ,x ,y -1))
      ((or (eq ,c *right*) (eq ,c *down*))
-      (multiple-value-bind (yy xx) (search-idx 1 (1+ ,y))
-        (when yy
-          (progn
-            ;(write (write-to-string (list "nie" ,y yy)))
-            (setf ,y yy)
-            (setf ,x xx)))))
+      (search-set ,x ,y 1))
      ((eq ,c *backspace*)
-      (setf *status* (str:substring 0 -1 *status*)))
+      (setf *status* (str:substring 0 -1 *status*)) 
+      (search-set ,x ,y 0))
      (T
       (progn
         (setf *status* (str:insert ,c (length *status*) *status*))
-        
-        (multiple-value-bind (yy xx) (search-idx 1 0)
-          (when yy
-            (progn
-              (setf ,y yy)
-              (setf ,x xx)))
-          ;(write yy)
-          ;(write (write-to-string xx))
-         ; (setf ,x xx)
-         )
-        
-        ))
-     ))
+        (search-set ,x ,y 0)))))
 
 (defmacro parse-input-normal (c x y)
   `(cond 
@@ -313,6 +336,10 @@
         (charms:enable-extra-keys T)
         (charms:clear-window T)
         (charms/ll:timeout 25)
+        (charms/ll:start-color)
+        (charms/ll:init-pair 1 charms/ll:COLOR_WHITE charms/ll:COLOR_BLACK)
+        (charms/ll:init-pair 2 charms/ll:COLOR_BLUE charms/ll:COLOR_BLACK)
+      ;  (charms/ll:attron (charms/ll:COLOR-PAIR 2))
         (setf charms/ll:*ESCDELAY* 25)
         
         (setf *height* (- (nth-value 1 (charms:window-dimensions T)) 3))
@@ -338,15 +365,10 @@
                    (when (and (< (- y 4) h) (> h 0))
                      (setf h (max (- y 4) 0)))
 
-                   ;(write (write-to-string y))
-
                    (when (>= (+ y 4) (+ *height* h))
-                     (setf h (+ (- y *height*) 4))
-                     )
+                     (setf h (+ (- y *height*) 4)))
 
                    (draw h)
-                  ; (when (eq *input-state* 'field)
-                  ;   (setf x 2))
 
                    ; MOVE CURSOR
                    ; TODO: Refactor to outer function to clean up
