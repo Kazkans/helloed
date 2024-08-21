@@ -1,8 +1,9 @@
 (ql:quickload :cl-charms)
 (ql:quickload "str")
+(ql:quickload "bt-semaphore")
 
 (defparameter *raw-rows*
-  (uiop:read-file-lines "ed.adb"))
+  (uiop:read-file-lines "test.c"))
 
 (defparameter *tab-width* 4)
 
@@ -10,10 +11,18 @@
 (defparameter *last-pos-x* 0)
 (defparameter *last-pos-y* 0)
 
+(defparameter *arr* NIL)
+
 (defstruct highlight
   y
   start
   end)
+
+(defstruct scanner
+  x
+  y
+  s
+  storage)
 
 (defparameter *highlight*
   NIL)
@@ -122,6 +131,28 @@
  ;     (charms:write-string-at-point window s x y)
       )))
 
+(defun get-arr (arr x y)
+  (when (and (< y (length arr))
+             (< x (length (aref arr y))))
+    (aref (aref arr y) x)))
+
+(defun write-at-hl (window s x y hl y-idx)
+  (multiple-value-bind (width height) (charms:window-dimensions window)
+    (when (and (< y (- height 3)) (>= y 0))
+      (loop for i from 0 below (min width (length s))
+            for c = (char s i)
+            do (progn 
+                 ;(when (eq (get-arr hl i y-idx) 'NUM) 
+                 ;    (charms/ll:attron (charms/ll:COLOR-PAIR 2)))
+                 (if (eq (get-arr hl i y-idx) 'KEYWORD) 
+                     (charms/ll:attron (charms/ll:COLOR-PAIR 2))
+               ;  when (eq (get-arr hl i y-idx) nil) 
+                     (charms/ll:attron (charms/ll:COLOR-PAIR 1)))
+                 (charms:write-char-at-point window c (+ x i) y)))
+      ;(charms/ll:mvaddnstr y x s width)
+ ;     (charms:write-string-at-point window s x y)
+      )))
+
 (defmacro dec (x)
   `(when (> ,x 0) (decf ,x)))
 
@@ -152,20 +183,157 @@
 ;  (multiple-value-bind (width height) (charms:window-dimensions window)
 ;    (write-at T *status* 0 (-1 height))))
 
-(defun draw (h)
+(defun scanner-cur (s)
+  (nth (scanner-y s) (scanner-s s)))
+
+(defun peek (s)
+  (if (< (scanner-x s) (length (scanner-cur s)))
+      (char (scanner-cur s) (scanner-x s))
+      (if (< (scanner-y s) (1- (length (scanner-s s))))
+          #\linefeed  
+          #\Null)))
+ ; (if (>= (scanner-x s) (length (scanner-cur s)))
+ ;     #\linefeed
+ ;     (char (scanner-cur s) (scanner-x s))))
+
+(defmacro eat (s)
+  `(progn
+    (setf (scanner-storage ,s) 
+          (nconc (scanner-storage ,s) (list (list (scanner-x ,s) (scanner-y ,s)))))
+    (if (= (scanner-x ,s) (length (scanner-cur ,s)))
+        (progn
+          (setf (scanner-x ,s) 0)
+          (incf (scanner-y ,s)))
+        (incf (scanner-x ,s)))))
+
+(defmacro reset-s (s)
+  `(setf (scanner-storage ,s) NIL))
+
+(defun is-digit (c)
+  (digit-char-p c))
+
+(defun is-whitespace (c)
+  (or (char= c #\Space)
+      (char= c #\Tab)
+      (char= c #\Newline)
+      (char= c #\Return)
+      (char= c #\Page)
+      (char= c #\Linefeed)
+      (char= c #\Null)))
+
+(defparameter +seperators+ ",.()+-/*=~%<>^[];!|")
+
+(defun is-seperator (c)
+  (or
+    (position c +seperators+)
+    (is-whitespace c)))
+
+(defun is-alpha (c)
+  (or
+    (alpha-char-p c)
+    (char= c #\_)))
+
+
+(defmacro save-storage-hl (scanner arr hl)
+  `(dolist (e (scanner-storage ,scanner))
+    (let ((x (first e))
+          (y (second e)))
+      (setf (aref (aref ,arr y) x) ,hl))))
+
+(defun storage-to-string (scanner)
+  (let ((out "")
+        (s (scanner-s scanner)))
+    (progn
+      (dolist (e (scanner-storage scanner))
+        (let ((x (first e))
+              (y (second e)))
+          (setf out (concatenate 'string 
+                                 out 
+                                 (string (char (nth y s) x))))))
+      out)))
+
+; we have first digit
+(defmacro parse-num (scanner arr)
+  `(progn
+    (reset-s ,scanner)
+    (loop while (is-digit (peek ,scanner))
+          do (eat ,scanner))
+    (when (eq (peek ,scanner) #\.) (eat ,scanner))
+    (loop while (is-digit (peek ,scanner))
+          do (eat ,scanner))
+    (is-seperator (peek ,scanner))
+    (save-storage-hl ,scanner ,arr 'NUM)))
+
+
+(defparameter *keywords* '("switch" "if" "while" "for" "break" "continue" "return" "else" "struct" "union" "typedef" "static" "enum" "class" "case" "int" "long" "double" "float" "char" "unsigned" "signed" "void"))
+
+; TODO MAKE KEYWORD
+(defmacro parse-keyword (scanner arr)
+  `(progn
+     (reset-s ,scanner)
+     (loop
+       for c = (peek ,scanner)
+       while (or (is-alpha c) (is-digit c))
+       do (eat ,scanner))
+     (is-seperator (peek ,scanner))
+     (when (member (storage-to-string scanner) *keywords* :test 'string=)
+       (save-storage-hl ,scanner ,arr 'KEYWORD))))
+
+; TODO ADD COMMENTS and strings
+(defun parse (scanner)
+  (let ((arr (make-array (length *ss*))))
+    (progn
+      (loop for s in *ss*
+            for y from 0
+            do (setf (aref arr y) (make-array (length s))))
+      (loop 
+        for c = (peek scanner)
+        while (not (char= c #\Null))
+        do (cond
+             ((is-digit c) (parse-num scanner arr))
+             ((is-alpha c) (parse-keyword scanner arr))
+             (T (eat scanner))))
+      arr
+      )))
+
+(defparameter *syntax-thread* nil)
+
+(defparameter *arr* nil)
+
+(defun parse-f ()
   (progn
-    (loop for s in *ss*
-          for y from (- h)
-          for i from 0
-        ;(charms/ll:attron (charms/ll:COLOR-PAIR 1))
-          do (progn 
-               (when *highlight*
-                 (if (= i 3)
-                     (charms/ll:attron (charms/ll:COLOR-PAIR 2))
-                     (charms/ll:attron (charms/ll:COLOR-PAIR 1)))
-                 )
-               (write-at T s 0 y i)))
-    (draw-status T)))
+    (when (and *syntax-thread* (bt:thread-alive-p *syntax-thread*))
+      (bt:destroy-thread *syntax-thread*))
+
+    (setf *syntax-thread* 
+          (bt:make-thread
+            (lambda ()
+              (setf *arr* (parse (make-scanner :x 0 :y 0 :s *ss*)))
+             )))))
+
+; bt:destroy-thread
+
+; TODO use parse in another thread
+(defun draw (h)
+;  (let ((arr (parse (make-scanner :x 0 :y 0 :s *ss*))))
+    (progn
+      (loop for s in *ss*
+            for y from (- h)
+            for i from 0
+            do (progn 
+                 (write-at-hl T s 0 y *arr* i)))
+      (draw-status T)))
+;)
+
+;(defun draw (h)
+;  (let ((arr (parse (make-scanner :x 0 :y 0 :s *ss*))))
+;    (progn
+;      (loop for s in *ss*
+;            for y from (- h)
+;            for i from 0
+;            do (progn 
+;                 (write-at T s 0 y i)))
+;      (draw-status T))))
 
 
 (defun set-nth (list n value)
@@ -248,80 +416,93 @@
         (setf *status* (str:insert ,c (length *status*) *status*))
         (search-set ,x ,y 0)))))
 
+(defun key-changing (c)
+  (not (or 
+             (eq c *up*)
+             (eq c *down*)
+             (eq c *right*)
+             (eq c *left*)
+             (eq c #\q)
+             (eq c NIL)
+             (eq c *ctrl-f*))))
+
 (defmacro parse-input-normal (c x y)
-  `(cond 
-    ((eq ,c *up*)    (dec ,y))
-    ((eq ,c *down*)  (inc ,y (- (length *ss*) 1)))
+  `(progn 
+     (cond 
+       ((eq ,c *up*)    (dec ,y))
+       ((eq ,c *down*)  (inc ,y (- (length *ss*) 1)))
 
-    ((eq ,c *right*) (setf ,x (min 
-                              (nth-length ,y *ss*)
-                              (index/normal (nth ,y *raw-rows*) 
-                                            (min 
-                                              (1+ (cursor/index (nth ,y *raw-rows*) x)) 
-                                              (nth-length ,y *raw-rows*))))))
-    ((eq ,c *left*)  (setf ,x (index/normal (nth ,y *raw-rows*) 
-                                          (1- (cursor/index (nth ,y *raw-rows*) ,x)))))
+       ((eq ,c *right*) (setf ,x (min 
+                                   (nth-length ,y *ss*)
+                                   (index/normal (nth ,y *raw-rows*) 
+                                                 (min 
+                                                   (1+ (cursor/index (nth ,y *raw-rows*) x)) 
+                                                   (nth-length ,y *raw-rows*))))))
+       ((eq ,c *left*)  (setf ,x (index/normal (nth ,y *raw-rows*) 
+                                               (1- (cursor/index (nth ,y *raw-rows*) ,x)))))
 
-    ((eq ,c #\q)     (return-from hello))
-    ((eq ,c *enter*) 
-     (progn
-       (let* ((row (nth ,y *raw-rows*))
-             (i (cursor/index row x)))
-         (progn
-           (when (string= row "")
-               (setf i 0))
-           (setf *raw-rows*
-                 (insert-lst *raw-rows*
-                             (subseq row i)
-                             (1+ ,y)))
-           (setf-nth *raw-rows* ,y (subseq row 0 i))
-           (setf-nth *ss* ,y (render-row (nth ,y *raw-rows*)))))
+       ((eq ,c #\q)     (return-from hello))
+       ((eq ,c *enter*) 
+        (progn
+          (let* ((row (nth ,y *raw-rows*))
+                 (i (cursor/index row x)))
+            (progn
+              (when (string= row "")
+                (setf i 0))
+              (setf *raw-rows*
+                    (insert-lst *raw-rows*
+                                (subseq row i)
+                                (1+ ,y)))
+              (setf-nth *raw-rows* ,y (subseq row 0 i))
+              (setf-nth *ss* ,y (render-row (nth ,y *raw-rows*)))))
 
-       (setf *ss* (insert-lst *ss* (render-row (nth (1+ ,y) *raw-rows*)) (1+ ,y)))
-       (setf ,y (1+ ,y))
-       (setf ,x 0)))
+          (setf *ss* (insert-lst *ss* (render-row (nth (1+ ,y) *raw-rows*)) (1+ ,y)))
+          (setf ,y (1+ ,y))
+          (setf ,x 0)))
 
-    ((eq ,c *backspace*) 
-     (let* ((raw-row (nth y *raw-rows*))
-            (i (cursor/index raw-row ,x)))
-       (if (or (= i 0) (= (length (nth ,y *ss*)) 0))
-           (when (not (= ,y 0))
-             (progn
-               (when (> (length raw-row) 0)
-                 (progn
-                   (setf-nth *raw-rows* (1- ,y) (concatenate 'string
-                                                             (nth (1- ,y) *raw-rows*)
-                                                             raw-row))
-                   (setf-nth *ss* (1- ,y) (render-row (nth (1- ,y) *raw-rows*)))))
-               (removef-lst-i *ss* ,y)   
-               (removef-lst-i *raw-rows* ,y)
+       ((eq ,c *backspace*) 
+        (let* ((raw-row (nth y *raw-rows*))
+               (i (cursor/index raw-row ,x)))
+          (if (or (= i 0) (= (length (nth ,y *ss*)) 0))
+              (when (not (= ,y 0))
+                (progn
+                  (when (> (length raw-row) 0)
+                    (progn
+                      (setf-nth *raw-rows* (1- ,y) (concatenate 'string
+                                                                (nth (1- ,y) *raw-rows*)
+                                                                raw-row))
+                      (setf-nth *ss* (1- ,y) (render-row (nth (1- ,y) *raw-rows*)))))
+                  (removef-lst-i *ss* ,y)   
+                  (removef-lst-i *raw-rows* ,y)
 
-               (let ((new-row (nth (1- ,y) *raw-rows*)))
-                 (setf ,x (index/normal new-row (length new-row))))
+                  (let ((new-row (nth (1- ,y) *raw-rows*)))
+                    (setf ,x (index/normal new-row (length new-row))))
 
-               (decf ,y)))
-           (progn 
-             (setf-nth *raw-rows* ,y (remove-i raw-row (1- i)))
-             (setf-nth *ss* ,y (render-row (nth ,y *raw-rows*)))
-             (setf x (index/normal (nth ,y *raw-rows*) (1- i)))))))
+                  (decf ,y)))
+              (progn 
+                (setf-nth *raw-rows* ,y (remove-i raw-row (1- i)))
+                (setf-nth *ss* ,y (render-row (nth ,y *raw-rows*)))
+                (setf x (index/normal (nth ,y *raw-rows*) (1- i)))))))
 
-    ((eq ,c *ctrl-f*) (progn
-                        (setf *last-pos-y* ,y)
-                        (setf *last-pos-x* ,x)
-                        (setf *input-state* 'field)))
-    ((eq ,c nil) nil) 
+       ((eq ,c *ctrl-f*) (progn
+                           (setf *last-pos-y* ,y)
+                           (setf *last-pos-x* ,x)
+                           (setf *input-state* 'field)))
+       ((eq ,c nil) nil) 
 
-    (T               (let* ((raw-row (nth y *raw-rows*))
-                           (i (cursor/index raw-row ,x)))
-                       (progn
-                       ;  (write (char-int ,c))
-                         (when (string= raw-row "")
-                           (setf i 0))
-                         (setf-nth *raw-rows* ,y (str:insert ,c i raw-row))
-                         (setf-nth *ss* ,y (render-row (nth ,y *raw-rows*)))
-                         (setf x (index/normal (nth ,y *raw-rows*) (1+ i)))
-                         ))))
-  )
+       (T               (let* ((raw-row (nth y *raw-rows*))
+                               (i (cursor/index raw-row ,x)))
+                          (progn
+                            ;  (write (char-int ,c))
+                            (when (string= raw-row "")
+                              (setf i 0))
+                            (setf-nth *raw-rows* ,y (str:insert ,c i raw-row))
+                            (setf-nth *ss* ,y (render-row (nth ,y *raw-rows*)))
+                            (setf x (index/normal (nth ,y *raw-rows*) (1+ i)))))))
+     (when (key-changing ,c)
+       (progn
+         (write 123)
+         (parse-f)))))
 
 (defmacro parse-input (c x y)
   `(cond
