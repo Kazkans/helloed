@@ -142,16 +142,12 @@
       (loop for i from 0 below (min width (length s))
             for c = (char s i)
             do (progn 
-                 ;(when (eq (get-arr hl i y-idx) 'NUM) 
-                 ;    (charms/ll:attron (charms/ll:COLOR-PAIR 2)))
-                 (if (eq (get-arr hl i y-idx) 'KEYWORD) 
-                     (charms/ll:attron (charms/ll:COLOR-PAIR 2))
-               ;  when (eq (get-arr hl i y-idx) nil) 
-                     (charms/ll:attron (charms/ll:COLOR-PAIR 1)))
-                 (charms:write-char-at-point window c (+ x i) y)))
-      ;(charms/ll:mvaddnstr y x s width)
- ;     (charms:write-string-at-point window s x y)
-      )))
+                 (case (get-arr hl i y-idx)
+                   ('NUM (charms/ll:attron (charms/ll:COLOR-PAIR 2)))
+                   ('KEYWORD (charms/ll:attron (charms/ll:COLOR-PAIR 3)))
+                   ('COM (charms/ll:attron (charms/ll:COLOR-PAIR 4)))
+                   (otherwise (charms/ll:attron (charms/ll:COLOR-PAIR 1))))
+                 (charms:write-char-at-point window c (+ x i) y))))))
 
 (defmacro dec (x)
   `(when (> ,x 0) (decf ,x)))
@@ -186,12 +182,24 @@
 (defun scanner-cur (s)
   (nth (scanner-y s) (scanner-s s)))
 
+(defun save (scanner)
+  (values (scanner-x scanner) (scanner-y scanner)))
+
+(defmacro revert (scanner pos)
+  `(multiple-value-bind (x y) ,pos
+    (setf (scanner-x ,scanner) x)
+    (setf (scanner-y ,scanner) y)))
+
 (defun peek (s)
-  (if (< (scanner-x s) (length (scanner-cur s)))
-      (char (scanner-cur s) (scanner-x s))
-      (if (< (scanner-y s) (1- (length (scanner-s s))))
-          #\linefeed  
-          #\Null)))
+  (progn
+    ;(write (write-to-string (scanner-y s)))
+    ;(write (scanner-x s))
+    ;  (write (list (scanner-x s) (scanner-y s)))
+    (if (< (scanner-x s) (length (scanner-cur s)))
+        (char (scanner-cur s) (scanner-x s))
+        (if (< (scanner-y s) (1- (length (scanner-s s))))
+            #\linefeed  
+            #\Null))))
  ; (if (>= (scanner-x s) (length (scanner-cur s)))
  ;     #\linefeed
  ;     (char (scanner-cur s) (scanner-x s))))
@@ -200,10 +208,11 @@
   `(progn
     (setf (scanner-storage ,s) 
           (nconc (scanner-storage ,s) (list (list (scanner-x ,s) (scanner-y ,s)))))
-    (if (= (scanner-x ,s) (length (scanner-cur ,s)))
+    (if (>= (scanner-x ,s) (length (scanner-cur ,s)))
+        ; (when (< (scanner-y ,s) (length (scanner-s ,s)))
         (progn
           (setf (scanner-x ,s) 0)
-          (incf (scanner-y ,s)))
+          (incf (scanner-y ,s)));)
         (incf (scanner-x ,s)))))
 
 (defmacro reset-s (s)
@@ -234,11 +243,20 @@
     (char= c #\_)))
 
 
+
+
 (defmacro save-storage-hl (scanner arr hl)
-  `(dolist (e (scanner-storage ,scanner))
-    (let ((x (first e))
-          (y (second e)))
-      (setf (aref (aref ,arr y) x) ,hl))))
+  `(progn  
+    (dolist (e (scanner-storage ,scanner))
+       (let ((x (first e))
+             (y (second e)))
+         (progn
+           (with-open-file (stream "put.txt"
+                                   :direction :output
+                                   :if-exists :append
+                                   :if-does-not-exist :create)
+             (write-string (write-to-string (list x y)) stream))
+           (setf (aref (aref ,arr y) x) ,hl))))))
 
 (defun storage-to-string (scanner)
   (let ((out "")
@@ -279,19 +297,50 @@
      (when (member (storage-to-string scanner) *keywords* :test 'string=)
        (save-storage-hl ,scanner ,arr 'KEYWORD))))
 
-; TODO ADD COMMENTS and strings
+
+(defun check-for-*/ (scanner)
+  (if (eq (peek scanner) #\*)
+      (progn
+        (eat scanner)
+        (eq (peek scanner) #\/))))
+
+(defmacro parse-comment (scanner arr)
+  `(let ((found-comment T))
+     (progn
+       (reset-s ,scanner)
+       (eat ,scanner)
+       (case (peek ,scanner)
+         (#\*
+          (progn
+            (eat ,scanner)
+            (loop while (not (check-for-*/ ,scanner))
+                  do (eat ,scanner))))
+         (#\/
+          (loop while (not (eq (peek ,scanner) #\Newline))
+                do (eat ,scanner)))
+         (t (setf found-comment nil)))
+       (with-open-file (stream "output.txt"
+                               :direction :output
+                               :if-exists :append
+                               :if-does-not-exist :create)
+         (write-string (write-to-string (scanner-storage ,scanner)) stream))
+       
+       (save-storage-hl ,scanner ,arr 'COM))))
+
+; TODO ADD strings
 (defun parse (scanner)
   (let ((arr (make-array (length *ss*))))
     (progn
       (loop for s in *ss*
             for y from 0
-            do (setf (aref arr y) (make-array (length s))))
+            do (setf (aref arr y) (make-array (1+ (length s)))))
       (loop 
         for c = (peek scanner)
         while (not (char= c #\Null))
         do (cond
              ((is-digit c) (parse-num scanner arr))
-             ((is-alpha c) (parse-keyword scanner arr))
+             ((is-alpha c) (parse-keyword scanner arr)) ; //
+             ((char= c #\/) (parse-comment scanner arr))
              (T (eat scanner))))
       arr
       )))
@@ -301,21 +350,21 @@
 (defparameter *arr* nil)
 
 (defun parse-f ()
-  (progn
-    (when (and *syntax-thread* (bt:thread-alive-p *syntax-thread*))
-      (bt:destroy-thread *syntax-thread*))
-
-    (setf *syntax-thread* 
-          (bt:make-thread
-            (lambda ()
-              (setf *arr* (parse (make-scanner :x 0 :y 0 :s *ss*)))
-             )))))
+  (setf *arr* (parse (make-scanner :x 0 :y 0 :s *ss*))))
+;  (progn
+;    (when (and *syntax-thread* (bt:thread-alive-p *syntax-thread*))
+;      (bt:destroy-thread *syntax-thread*))
+;
+;    (setf *syntax-thread* 
+;          (bt:make-thread
+;            (lambda ()
+;              (setf *arr* (parse (make-scanner :x 0 :y 0 :s *ss*)))
+;             )))))
 
 ; bt:destroy-thread
 
 ; TODO use parse in another thread
 (defun draw (h)
-;  (let ((arr (parse (make-scanner :x 0 :y 0 :s *ss*))))
     (progn
       (loop for s in *ss*
             for y from (- h)
@@ -323,17 +372,7 @@
             do (progn 
                  (write-at-hl T s 0 y *arr* i)))
       (draw-status T)))
-;)
 
-;(defun draw (h)
-;  (let ((arr (parse (make-scanner :x 0 :y 0 :s *ss*))))
-;    (progn
-;      (loop for s in *ss*
-;            for y from (- h)
-;            for i from 0
-;            do (progn 
-;                 (write-at T s 0 y i)))
-;      (draw-status T))))
 
 
 (defun set-nth (list n value)
@@ -493,7 +532,6 @@
        (T               (let* ((raw-row (nth y *raw-rows*))
                                (i (cursor/index raw-row ,x)))
                           (progn
-                            ;  (write (char-int ,c))
                             (when (string= raw-row "")
                               (setf i 0))
                             (setf-nth *raw-rows* ,y (str:insert ,c i raw-row))
@@ -501,7 +539,6 @@
                             (setf x (index/normal (nth ,y *raw-rows*) (1+ i)))))))
      (when (key-changing ,c)
        (progn
-         (write 123)
          (parse-f)))))
 
 (defmacro parse-input (c x y)
@@ -520,11 +557,12 @@
         (charms/ll:start-color)
         (charms/ll:init-pair 1 charms/ll:COLOR_WHITE charms/ll:COLOR_BLACK)
         (charms/ll:init-pair 2 charms/ll:COLOR_BLUE charms/ll:COLOR_BLACK)
+        (charms/ll:init-pair 3 charms/ll:COLOR_YELLOW charms/ll:COLOR_BLACK)
+        (charms/ll:init-pair 4 charms/ll:COLOR_GREEN charms/ll:COLOR_BLACK)
       ;  (charms/ll:attron (charms/ll:COLOR-PAIR 2))
         (setf charms/ll:*ESCDELAY* 25)
         
         (setf *height* (- (nth-value 1 (charms:window-dimensions T)) 3))
-        ;(write (write-to-string *height*))
         
         (loop named hello
               with window = charms:*standard-window*
