@@ -1,5 +1,7 @@
 # Helloed - a simple editor written in common lisp
 
+![Screenshot of the program](screenshot.png)
+
 ### The features are:
 - multithreaded syntax highlighting (for c files),
 - opening file,
