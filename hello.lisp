@@ -1,3 +1,5 @@
+(in-package :main)
+
 (ql:quickload :cl-charms)
 (ql:quickload "str")
 (ql:quickload "bt-semaphore")
@@ -103,6 +105,8 @@
   (code-char 330))
 (defvar *escape*
   (code-char 27))
+(defvar *ctrl-w*
+  (code-char 23))
 (defvar *ctrl-f*
   (code-char 6))
 (defvar *ctrl-h*
@@ -147,7 +151,10 @@
                    ('KEYWORD (charms/ll:attron (charms/ll:COLOR-PAIR 3)))
                    ('COM (charms/ll:attron (charms/ll:COLOR-PAIR 4)))
                    (otherwise (charms/ll:attron (charms/ll:COLOR-PAIR 1))))
-                 (charms:write-char-at-point window c (+ x i) y))))))
+                 (when (in-highlight y-idx i *highlight*)
+                     (charms/ll:attron (charms/ll:COLOR-PAIR 5)))
+                 (charms:write-char-at-point window c (+ x i) y)
+                 (charms/ll:attron (charms/ll:COLOR-PAIR 1)))))))
 
 (defmacro dec (x)
   `(when (> ,x 0) (decf ,x)))
@@ -242,9 +249,6 @@
     (alpha-char-p c)
     (char= c #\_)))
 
-
-
-
 (defmacro save-storage-hl (scanner arr hl)
   `(progn  
     (dolist (e (scanner-storage ,scanner))
@@ -314,18 +318,40 @@
           (progn
             (eat ,scanner)
             (loop while (not (check-for-*/ ,scanner))
-                  do (eat ,scanner))))
+                  do (eat ,scanner))
+            (eat ,scanner)))
          (#\/
           (loop while (not (eq (peek ,scanner) #\Newline))
                 do (eat ,scanner)))
          (t (setf found-comment nil)))
-       (with-open-file (stream "output.txt"
-                               :direction :output
-                               :if-exists :append
-                               :if-does-not-exist :create)
-         (write-string (write-to-string (scanner-storage ,scanner)) stream))
-       
-       (save-storage-hl ,scanner ,arr 'COM))))
+       (when found-comment
+         (save-storage-hl ,scanner ,arr 'COM)))))
+
+(defmacro parse-string (scanner arr)
+  `(progn
+     (reset-s ,scanner)
+     (eat ,scanner)
+     (loop
+       for c = (peek ,scanner)
+       while (not (or (eq c #\") (eq c #\Null)))
+       do (progn
+            (when (eq c #\\)
+              (eat ,scanner))
+            (eat ,scanner)))
+     (eat ,scanner)
+     (save-storage-hl ,scanner ,arr 'COM)))
+
+(defmacro parse-char (scanner arr)
+  `(progn
+     (reset-s ,scanner)
+     (eat ,scanner)
+     (when (eq (peek ,scanner) #\\)
+       (eat ,scanner))
+     (eat ,scanner)
+     (when (eq (peek ,scanner) #\')
+       (progn
+         (eat ,scanner)
+         (save-storage-hl ,scanner ,arr 'COM)))))
 
 ; TODO ADD strings
 (defun parse (scanner)
@@ -340,7 +366,10 @@
         do (cond
              ((is-digit c) (parse-num scanner arr))
              ((is-alpha c) (parse-keyword scanner arr)) ; //
+             ((char= c #\') (parse-char scanner arr))
+             ((char= c #\") (parse-string scanner arr))
              ((char= c #\/) (parse-comment scanner arr))
+           ;  ((char= c #\") (parse-string scanner arr))
              (T (eat scanner))))
       arr
       )))
@@ -350,16 +379,16 @@
 (defparameter *arr* nil)
 
 (defun parse-f ()
-  (setf *arr* (parse (make-scanner :x 0 :y 0 :s *ss*))))
-;  (progn
-;    (when (and *syntax-thread* (bt:thread-alive-p *syntax-thread*))
-;      (bt:destroy-thread *syntax-thread*))
-;
-;    (setf *syntax-thread* 
-;          (bt:make-thread
-;            (lambda ()
-;              (setf *arr* (parse (make-scanner :x 0 :y 0 :s *ss*)))
-;             )))))
+ ; (setf *arr* (parse (make-scanner :x 0 :y 0 :s *ss*))))
+  (progn
+    (when (and *syntax-thread* (bt:thread-alive-p *syntax-thread*))
+      (bt:destroy-thread *syntax-thread*))
+
+    (setf *syntax-thread* 
+          (bt:make-thread
+            (lambda ()
+              (setf *arr* (parse (make-scanner :x 0 :y 0 :s *ss*)))
+             )))))
 
 ; bt:destroy-thread
 
@@ -461,12 +490,14 @@
              (eq c *down*)
              (eq c *right*)
              (eq c *left*)
-             (eq c #\q)
+             (eq c *ctrl-w*)
              (eq c NIL)
              (eq c *ctrl-f*))))
 
 (defmacro parse-input-normal (c x y)
   `(progn 
+     (when (not (eq ,c nil))
+       (write (write-to-string (char-int ,c))))
      (cond 
        ((eq ,c *up*)    (dec ,y))
        ((eq ,c *down*)  (inc ,y (- (length *ss*) 1)))
@@ -480,7 +511,7 @@
        ((eq ,c *left*)  (setf ,x (index/normal (nth ,y *raw-rows*) 
                                                (1- (cursor/index (nth ,y *raw-rows*) ,x)))))
 
-       ((eq ,c #\q)     (return-from hello))
+       ((eq ,c *ctrl-w*)     (return-from hello))
        ((eq ,c *enter*) 
         (progn
           (let* ((row (nth ,y *raw-rows*))
@@ -505,6 +536,9 @@
           (if (or (= i 0) (= (length (nth ,y *ss*)) 0))
               (when (not (= ,y 0))
                 (progn
+                  (let ((new-row (nth (1- ,y) *raw-rows*)))
+                    (setf ,x (index/normal new-row (length new-row))))
+
                   (when (> (length raw-row) 0)
                     (progn
                       (setf-nth *raw-rows* (1- ,y) (concatenate 'string
@@ -513,10 +547,6 @@
                       (setf-nth *ss* (1- ,y) (render-row (nth (1- ,y) *raw-rows*)))))
                   (removef-lst-i *ss* ,y)   
                   (removef-lst-i *raw-rows* ,y)
-
-                  (let ((new-row (nth (1- ,y) *raw-rows*)))
-                    (setf ,x (index/normal new-row (length new-row))))
-
                   (decf ,y)))
               (progn 
                 (setf-nth *raw-rows* ,y (remove-i raw-row (1- i)))
@@ -559,6 +589,7 @@
         (charms/ll:init-pair 2 charms/ll:COLOR_BLUE charms/ll:COLOR_BLACK)
         (charms/ll:init-pair 3 charms/ll:COLOR_YELLOW charms/ll:COLOR_BLACK)
         (charms/ll:init-pair 4 charms/ll:COLOR_GREEN charms/ll:COLOR_BLACK)
+        (charms/ll:init-pair 5 charms/ll:COLOR_RED charms/ll:COLOR_BLACK)
       ;  (charms/ll:attron (charms/ll:COLOR-PAIR 2))
         (setf charms/ll:*ESCDELAY* 25)
         
