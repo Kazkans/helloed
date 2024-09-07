@@ -1,17 +1,47 @@
-(in-package :main)
-
 (ql:quickload :cl-charms)
 (ql:quickload "str")
 (ql:quickload "bt-semaphore")
 
+(declaim (optimze (speed 3) (safety 0) (debug 0)))
+
 (defparameter *raw-rows*
-  (uiop:read-file-lines "test.c"))
+  (list ""))
 
 (defparameter *tab-width* 4)
+(defparameter *cur-path* "")
 
 (defparameter *height* 20)
 (defparameter *last-pos-x* 0)
 (defparameter *last-pos-y* 0)
+
+(defvar *right*
+  (code-char 261))
+(defvar *left*
+  (code-char 260))
+(defvar *up*
+  (code-char 259))
+(defvar *down*
+  (code-char 258))
+(defvar *backspace*
+  (code-char 263))
+(defvar *enter*
+  (code-char 10))
+(defvar *del*
+  (code-char 330))
+(defvar *escape*
+  (code-char 27))
+(defvar *ctrl-w*
+  (code-char 23))
+(defvar *ctrl-f*
+  (code-char 6))
+(defvar *ctrl-h*
+  (code-char 8))
+(defvar *ctrl-o*
+  (code-char 15))
+(defvar *ctrl-a*
+  (code-char 1))
+(defvar *ctrl-l*
+  (code-char 12))
 
 (defparameter *arr* NIL)
 
@@ -82,37 +112,15 @@
                               (1+ j)
                               j)))))
 
-(defparameter *ss*
-  (loop for s in *raw-rows*
+(defun render-rows (raw-rows)
+  (loop for s in raw-rows
        collect (render-row s)))
+
+(defparameter *ss*
+  (render-rows *raw-rows*))
 
 (defparameter *status* "")
 (defparameter *input-state* 'normal)
-
-(defvar *right*
-  (code-char 261))
-(defvar *left*
-  (code-char 260))
-(defvar *up*
-  (code-char 259))
-(defvar *down*
-  (code-char 258))
-(defvar *backspace*
-  (code-char 263))
-(defvar *enter*
-  (code-char 10))
-(defvar *del*
-  (code-char 330))
-(defvar *escape*
-  (code-char 27))
-(defvar *ctrl-w*
-  (code-char 23))
-(defvar *ctrl-f*
-  (code-char 6))
-(defvar *ctrl-h*
-  (code-char 8))
-(defvar *ctrl-l*
-  (code-char 12))
 
 (defun in-highlight (y x hl)
   (and
@@ -120,20 +128,6 @@
     (= (highlight-y hl) y)
     (<= (highlight-start hl) x)
     (> (highlight-end hl) x)))
-
-(defun write-at (window s x y row)
-  (multiple-value-bind (width height) (charms:window-dimensions window)
-    (when (and (< y (- height 3)) (>= y 0))
-      (loop for i from 0 below (min width (length s))
-            for c = (char s i)
-            do (progn 
-                 (if (in-highlight row i *highlight*) 
-                     (charms/ll:attron (charms/ll:COLOR-PAIR 2))
-                     (charms/ll:attron (charms/ll:COLOR-PAIR 1)))
-                 (charms:write-char-at-point window c (+ x i) y)))
-      ;(charms/ll:mvaddnstr y x s width)
- ;     (charms:write-string-at-point window s x y)
-      )))
 
 (defun get-arr (arr x y)
   (when (and (< y (length arr))
@@ -182,9 +176,6 @@
 (defun draw-status (window)
   (multiple-value-bind (width height) (charms:window-dimensions window)
     (charms/ll:mvaddnstr (- height 2) 0 *status* width)))
-  
-;  (multiple-value-bind (width height) (charms:window-dimensions window)
-;    (write-at T *status* 0 (-1 height))))
 
 (defun scanner-cur (s)
   (nth (scanner-y s) (scanner-s s)))
@@ -199,24 +190,17 @@
 
 (defun peek (s)
   (progn
-    ;(write (write-to-string (scanner-y s)))
-    ;(write (scanner-x s))
-    ;  (write (list (scanner-x s) (scanner-y s)))
     (if (< (scanner-x s) (length (scanner-cur s)))
         (char (scanner-cur s) (scanner-x s))
         (if (< (scanner-y s) (1- (length (scanner-s s))))
             #\linefeed  
             #\Null))))
- ; (if (>= (scanner-x s) (length (scanner-cur s)))
- ;     #\linefeed
- ;     (char (scanner-cur s) (scanner-x s))))
 
 (defmacro eat (s)
   `(progn
     (setf (scanner-storage ,s) 
           (nconc (scanner-storage ,s) (list (list (scanner-x ,s) (scanner-y ,s)))))
     (if (>= (scanner-x ,s) (length (scanner-cur ,s)))
-        ; (when (< (scanner-y ,s) (length (scanner-s ,s)))
         (progn
           (setf (scanner-x ,s) 0)
           (incf (scanner-y ,s)));)
@@ -274,7 +258,6 @@
                                  (string (char (nth y s) x))))))
       out)))
 
-; we have first digit
 (defmacro parse-num (scanner arr)
   `(progn
     (reset-s ,scanner)
@@ -289,7 +272,6 @@
 
 (defparameter *keywords* '("switch" "if" "while" "for" "break" "continue" "return" "else" "struct" "union" "typedef" "static" "enum" "class" "case" "int" "long" "double" "float" "char" "unsigned" "signed" "void"))
 
-; TODO MAKE KEYWORD
 (defmacro parse-keyword (scanner arr)
   `(progn
      (reset-s ,scanner)
@@ -353,7 +335,6 @@
          (eat ,scanner)
          (save-storage-hl ,scanner ,arr 'COM)))))
 
-; TODO ADD strings
 (defun parse (scanner)
   (let ((arr (make-array (length *ss*))))
     (progn
@@ -369,30 +350,29 @@
              ((char= c #\') (parse-char scanner arr))
              ((char= c #\") (parse-string scanner arr))
              ((char= c #\/) (parse-comment scanner arr))
-           ;  ((char= c #\") (parse-string scanner arr))
              (T (eat scanner))))
-      arr
-      )))
+      arr)))
 
 (defparameter *syntax-thread* nil)
 
 (defparameter *arr* nil)
 
 (defun parse-f ()
- ; (setf *arr* (parse (make-scanner :x 0 :y 0 :s *ss*))))
-  (progn
-    (when (and *syntax-thread* (bt:thread-alive-p *syntax-thread*))
-      (bt:destroy-thread *syntax-thread*))
+  (when
+    (let ((ext (car (last (str:split "." *cur-path*)))))
+      (or
+        (string= ext "c")
+        (string= ext "cc")))
+    (progn
+      (when (and *syntax-thread* (bt:thread-alive-p *syntax-thread*))
+        (bt:destroy-thread *syntax-thread*))
 
-    (setf *syntax-thread* 
-          (bt:make-thread
-            (lambda ()
-              (setf *arr* (parse (make-scanner :x 0 :y 0 :s *ss*)))
-             )))))
+      (setf *syntax-thread* 
+            (bt:make-thread
+              (lambda ()
+                (setf *arr* (parse (make-scanner :x 0 :y 0 :s *ss*)))
+                ))))))
 
-; bt:destroy-thread
-
-; TODO use parse in another thread
 (defun draw (h)
     (progn
       (loop for s in *ss*
@@ -484,6 +464,55 @@
         (setf *status* (str:insert ,c (length *status*) *status*))
         (search-set ,x ,y 0)))))
 
+(defun rows-to-file (rows)
+  (with-output-to-string (out)
+    (mapc (lambda (line)
+            (format out "~a~%" line))
+          rows)))
+
+(defmacro open-file (x y)
+  `(let ((path (uiop:probe-file* *status*)))
+     (when path
+       (progn
+         (setf *raw-rows* (uiop:read-file-lines path))
+         (setf *ss* (render-rows *raw-rows*))
+         (setf ,x 0)
+         (setf ,y 0)
+         (setf *cur-path* *status*)
+         (parse-f)
+         (setf *status* "")))))
+
+(defun save-file (x y)
+  (declare (ignore x y))
+  (setf *cur-path* *status*)
+  (with-open-file (out *cur-path*
+                       :direction :output
+                       :if-exists :supersede
+                       :if-does-not-exist :create)
+    (write-sequence (rows-to-file *raw-rows*) out))    
+  (parse-f)
+  (setf *status* "Saved file"))
+
+(defmacro parse-open-field (c x y on-enter)
+  `(cond
+     ((eq ,c NIL)
+      ())
+     ((eq ,c *enter*)
+      (progn
+        (,on-enter ,x ,y)
+        (escape-input-state)))
+     ((eq ,c *escape*)
+      (progn
+        (setf ,y *last-pos-y*)
+        (setf ,x *last-pos-x*)
+
+        (setf *status* "")
+        (escape-input-state)))
+     ((eq ,c *backspace*)
+      (setf *status* (str:substring 0 -1 *status*)))
+     (T
+      (setf *status* (str:insert ,c (length *status*) *status*)))))
+
 (defun key-changing (c)
   (not (or 
              (eq c *up*)
@@ -496,8 +525,6 @@
 
 (defmacro parse-input-normal (c x y)
   `(progn 
-     (when (not (eq ,c nil))
-       (write (write-to-string (char-int ,c))))
      (cond 
        ((eq ,c *up*)    (dec ,y))
        ((eq ,c *down*)  (inc ,y (- (length *ss*) 1)))
@@ -556,7 +583,28 @@
        ((eq ,c *ctrl-f*) (progn
                            (setf *last-pos-y* ,y)
                            (setf *last-pos-x* ,x)
+                           (setf *status* "")
                            (setf *input-state* 'field)))
+       ((eq ,c *ctrl-o*) (progn
+                           (setf *last-pos-y* ,y)
+                           (setf *last-pos-x* ,x)
+                           (setf *status* "")
+                           (setf *input-state* 'open-field)))
+       ((eq ,c *ctrl-a*) (progn ; saving
+                           (if (string= *cur-path* "")
+                               (setf *status* "File yet not named")
+                               (progn
+                                 (setf *status* "Saved file")
+                                 (with-open-file (out *cur-path*
+                                                      :direction :output
+                                                      :if-exists :supersede
+                                                      :if-does-not-exist :create)
+                                   (write-sequence (rows-to-file *raw-rows*) out))))))
+       ((eq ,c *ctrl-l*) (progn ; saving
+                           (setf *last-pos-y* ,y)
+                           (setf *last-pos-x* ,x)
+                           (setf *status* "")
+                           (setf *input-state* 'save-field)))
        ((eq ,c nil) nil) 
 
        (T               (let* ((raw-row (nth y *raw-rows*))
@@ -574,9 +622,19 @@
 (defmacro parse-input (c x y)
   `(cond
     ((eq *input-state* 'normal) (parse-input-normal ,c ,x ,y))
+    ((eq *input-state* 'open-field)  (parse-open-field ,c ,x ,y open-file))  
+    ((eq *input-state* 'save-field)  (parse-open-field ,c ,x ,y save-file))  
     ((eq *input-state* 'field)  (parse-input-field ,c ,x ,y))))
 
-(defun hello ()
+(defmacro adjust-screen (h y)
+  `(progn
+     (when (and (< (- ,y 4) ,h) (> ,h 0))
+       (setf ,h (max (- ,y 4) 0)))
+
+     (when (>= (+ ,y 4) (+ *height* ,h))
+       (setf ,h (+ (- ,y *height*) 4)))))
+
+;(defun hello ()
   (charms:with-curses ()
         (charms:disable-echoing)
         (charms:enable-raw-input)
@@ -585,12 +643,12 @@
         (charms:clear-window T)
         (charms/ll:timeout 25)
         (charms/ll:start-color)
+        ; init colors
         (charms/ll:init-pair 1 charms/ll:COLOR_WHITE charms/ll:COLOR_BLACK)
         (charms/ll:init-pair 2 charms/ll:COLOR_BLUE charms/ll:COLOR_BLACK)
         (charms/ll:init-pair 3 charms/ll:COLOR_YELLOW charms/ll:COLOR_BLACK)
         (charms/ll:init-pair 4 charms/ll:COLOR_GREEN charms/ll:COLOR_BLACK)
         (charms/ll:init-pair 5 charms/ll:COLOR_RED charms/ll:COLOR_BLACK)
-      ;  (charms/ll:attron (charms/ll:COLOR-PAIR 2))
         (setf charms/ll:*ESCDELAY* 25)
         
         (setf *height* (- (nth-value 1 (charms:window-dimensions T)) 3))
@@ -603,29 +661,15 @@
               for c = (charms:get-char window :ignore-error t)
               do (progn
                    (charms:clear-window window :force-repaint nil)
-                   ;(when c
-                   ;  (write (write-to-string (char-int c))))
                    
                    (parse-input c x y)
-
-
-                   ; SCROLL SCREEN
-                   ; TODO: Refactor to outer function to clean up
-                   ; FIX SCROLLING
-                   (when (and (< (- y 4) h) (> h 0))
-                     (setf h (max (- y 4) 0)))
-
-                   (when (>= (+ y 4) (+ *height* h))
-                     (setf h (+ (- y *height*) 4)))
-
+                   (adjust-screen h y)
                    (draw h)
 
                    ; MOVE CURSOR
-                   ; TODO: Refactor to outer function to clean up
                    (let ((raw-row (nth y *raw-rows*)))
-
                          (move-cursor window 
                                       (cursor/normal raw-row x)
                                       (- y h) (length (nth y *ss*)))
-                         )))))
+                         ))));)
 
